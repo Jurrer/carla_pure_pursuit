@@ -154,7 +154,7 @@ def game_loop():
                 car_loc.x = car_loc.x + (odl * math.cos(math.radians(car_yaw)))
                 car_loc.y = car_loc.y + (odl * math.sin(math.radians(car_yaw)))
 
-                car_vel = vehicle.get_velocity()
+                car_vel = vehicle.get_velocityd()
                 car_vel = math.sqrt(
                     (car_vel.x * car_vel.x) + (car_vel.y * car_vel.y) + (car_vel.z * car_vel.z))  # [m/s]
 
@@ -226,6 +226,7 @@ def game_loop():
                                 wn.transform.location.y, wn.transform.location.z, waypoint_yaw_n,
                                 wp.transform.location.x, wp.transform.location.y, wp.transform.location.z,
                                 waypoint_yaw_p, a, b, e, es, he, steer_input])
+
 
                 wp = wn
                 pygame.display.flip()
