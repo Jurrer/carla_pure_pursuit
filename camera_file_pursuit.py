@@ -133,8 +133,9 @@ def game_loop():
         kn = 1
         kd = 0
         wp = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=(carla.LaneType.Driving))
-
         vehicle.apply_control(carla.VehicleControl(throttle=thr_val, steer=0.0))
+        haha = 0
+        wp.transform.rotation.yaw
 
         # waypoint_previous(wp), waypoint_next(wn), vehicle_location(car), vehicle_velocity(cer_vel), throttle_value(thr_val)
         # cross_track_error(e), cross_track_steering(es), heding_error(he)
@@ -164,6 +165,7 @@ def game_loop():
                     (car_vel.x * car_vel.x) + (car_vel.y * car_vel.y) + (car_vel.z * car_vel.z))  # [m/s]
 
                 wn = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=(carla.LaneType.Driving))
+                wn1 = carla.Waypoint.next(wn, 2)
 
                 world.debug.draw_string(wn.transform.location, 'O', draw_shadow=False, color=carla.Color(r=0, g=0, b=255),
                                         life_time=0.01, persistent_lines=True)
