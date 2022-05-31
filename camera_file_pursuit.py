@@ -80,7 +80,7 @@ def get_cam(world: carla.World,
             ):
     # Zmienić wartości x,z,[y],pitch żeby zmienić pozycję kamery
     camera_transform: Tuple[carla.Transform, carla.AttachmentType] = \
-        (carla.Transform(carla.Location(x=-5.5, z=1.75), carla.Rotation(pitch=0.5)),
+        (carla.Transform(carla.Location(x=-5.5, z=2), carla.Rotation(pitch=0.5)),
          carla.AttachmentType.Rigid)
 
     sensor_data = ['sensor.camera.rgb', cc.Raw]
@@ -117,7 +117,7 @@ def game_loop():
 
         blueprint_library = world.get_blueprint_library()
 
-        bp = blueprint_library.filter('model3')[0]
+        bp = blueprint_library.filter('Cybertruck')[0]
 
         spawn_point = world.get_map().get_spawn_points()[34]  # 38 najlepszy
         vehicle = world.spawn_actor(bp, spawn_point)
@@ -128,11 +128,12 @@ def game_loop():
         actor_list.append(cam)
 
         map = world.get_map()
-        odl = 1.8
-        thr_val = 0.7
+        odl = -2
+        thr_val = 0.2
         kn = 1
         kd = 0
         wp = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=(carla.LaneType.Driving))
+
         vehicle.apply_control(carla.VehicleControl(throttle=thr_val, steer=0.0))
 
         # waypoint_previous(wp), waypoint_next(wn), vehicle_location(car), vehicle_velocity(cer_vel), throttle_value(thr_val)
@@ -150,16 +151,22 @@ def game_loop():
 
                 car_loc = vehicle.get_location()
                 car_yaw = vehicle.get_transform().rotation.yaw
-
+                print(car_loc, car_yaw)
+                world.debug.draw_string(car_loc, 'O', draw_shadow=False, color=carla.Color(r=255, g=0, b=0),
+                                        life_time=0.01, persistent_lines=True)
                 car_loc.x = car_loc.x + (odl * math.cos(math.radians(car_yaw)))
                 car_loc.y = car_loc.y + (odl * math.sin(math.radians(car_yaw)))
-
-                car_vel = vehicle.get_velocityd()
+                print(car_loc)
+                world.debug.draw_string(car_loc, 'O', draw_shadow=False, color=carla.Color(r=0, g=255, b=0),
+                                        life_time=0.01, persistent_lines=True)
+                car_vel = vehicle.get_velocity()
                 car_vel = math.sqrt(
                     (car_vel.x * car_vel.x) + (car_vel.y * car_vel.y) + (car_vel.z * car_vel.z))  # [m/s]
 
-                wn = map.get_waypoint(car_loc, project_to_road=True, lane_type=(carla.LaneType.Driving))
+                wn = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=(carla.LaneType.Driving))
 
+                world.debug.draw_string(wn.transform.location, 'O', draw_shadow=False, color=carla.Color(r=0, g=0, b=255),
+                                        life_time=0.01, persistent_lines=True)
                 a = (wn.transform.location.y - wp.transform.location.y) / (
                             wn.transform.location.x - wp.transform.location.x + 0.000000001)
                 b = wp.transform.location.y - (wp.transform.location.x * a)
@@ -168,6 +175,7 @@ def game_loop():
 
                 waypoint_yaw_n = wn.transform.rotation.yaw
                 waypoint_yaw_p = wp.transform.rotation.yaw
+
 
                 # Normalizacja yaw na zakres 0-360
                 if car_yaw < 0:
@@ -215,12 +223,12 @@ def game_loop():
                 vehicle.apply_control(carla.VehicleControl(throttle=thr_val, steer=steer_input))
 
                 # print(e, '\n')
-                world.debug.draw_string(car_loc, 'O', draw_shadow=False, color=carla.Color(r=255, g=0, b=0),
-                                        life_time=0.1, persistent_lines=True)
-                world.debug.draw_string(wn.transform.location, 'O', draw_shadow=False,
-                                        color=carla.Color(r=0, g=255, b=0), life_time=0.1, persistent_lines=True)
-                world.debug.draw_string(wp.transform.location, 'O', draw_shadow=False,
-                                        color=carla.Color(r=0, g=0, b=255), life_time=0.1, persistent_lines=True)
+                # world.debug.draw_string(car_loc, 'O', draw_shadow=False, color=carla.Color(r=255, g=0, b=0),
+                #                         life_time=0.1, persistent_lines=True)
+                # world.debug.draw_string(wn.transform.location, 'O', draw_shadow=False,
+                #                         color=carla.Color(r=0, g=255, b=0), life_time=0.1, persistent_lines=True)
+                # world.debug.draw_string(wp.transform.location, 'O', draw_shadow=False,
+                #                         color=carla.Color(r=0, g=0, b=255), life_time=0.1, persistent_lines=True)
 
                 zapis.writerow([car_loc.x, car_loc.y, car_loc.z, car_yaw, car_vel, wn.transform.location.x,
                                 wn.transform.location.y, wn.transform.location.z, waypoint_yaw_n,
