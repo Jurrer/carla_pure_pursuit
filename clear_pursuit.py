@@ -1,14 +1,5 @@
 #!/usr/bin/env python
-
-# Copyright (c) 2019 Computer Vision Center (CVC) at the Universitat Autonoma de
-# Barcelona (UAB).
-#
-# This work is licensed under the terms of the MIT license.
-# For a copy, see <https://opensource.org/licenses/MIT>.
-
-# Allows controlling a vehicle with a keyboard. For a simpler and more
-# documented example, please take a look at tutorial.py.
-
+# -*- coding: cp1250 -*-
 
 from __future__ import print_function
 
@@ -20,6 +11,12 @@ from __future__ import print_function
 import glob
 import os
 import sys
+import carla
+import math
+from carla import ColorConverter as cc
+from typing import Tuple
+import pygame
+import numpy as np
 
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
@@ -34,17 +31,78 @@ except IndexError:
 # ==============================================================================
 
 
-import carla
-import time
-import random
-import math
+DISPLAY = None
+WINDOW_SIZE = (1280, 720)  ## Zmiana wielkoœci wyœwietlanego okna
+
+
+def get_display(dim: Tuple[int, int]):
+    global DISPLAY
+    DISPLAY = pygame.display.set_mode(
+        (dim[0], dim[1]),
+        pygame.HWSURFACE | pygame.DOUBLEBUF)
+    DISPLAY.fill((0, 0, 0))
+    pygame.display.flip()
+
+
+def render_img(surf):
+    global DISPLAY  ##!!!
+    if surf is not None:
+        DISPLAY.blit(surf, (0, 0))
+
+
+def parse_image(img, color_conversion):
+    img.convert(color_conversion)
+    array = np.frombuffer(img.raw_data, dtype=np.uint8)
+    array = np.reshape(array, (img.height, img.width, 4))
+    array = array[:, :, :3]
+    array = array[:, :, ::-1]
+    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    render_img(surface)
+
+
+def get_cam(world: carla.World,
+            _parent: carla.Vehicle,
+            dim: Tuple[int, int]
+            ):
+    # Zmieniæ wartoœci x,z,[y],pitch ¿eby zmieniæ pozycjê kamery
+    camera_transform: Tuple[carla.Transform, carla.AttachmentType] = \
+        (carla.Transform(carla.Location(x=-5.5, z=1.75), carla.Rotation(pitch=0.5)),
+         carla.AttachmentType.Rigid)
+
+    sensor_data = ['sensor.camera.rgb', cc.Raw]
+
+    blueprint_library = world.get_blueprint_library()
+    blueprint = blueprint_library.find(sensor_data[0])
+
+    blueprint.set_attribute('image_size_x', str(dim[0]))
+    blueprint.set_attribute('image_size_y', str(dim[1]))
+    if blueprint.has_attribute('gamma'):
+        blueprint.set_attribute('gamma', str(2.2))
+
+    sensor = world.spawn_actor(
+        blueprint,
+        camera_transform[0],
+        attach_to=_parent,
+        attachment_type=camera_transform[1]
+    )
+
+    sensor.listen(lambda image: parse_image(image, sensor_data[1]))
+    return sensor
+
+
+get_display(WINDOW_SIZE)
+
+
+# liczenie odleg³oœci miêdzy punktami
+def jak_daleko(pntLoc, vehLoc):
+    return math.sqrt(pow(((pntLoc.x) - vehLoc.x), 2) + pow(((pntLoc.y) - vehLoc.y), 2))
 
 
 def game_loop():
     actor_list = []
     try:
         client = carla.Client('localhost', 2000)
-        client.set_timeout(10.0)
+        client.set_timeout(100.0)
 
         world = client.get_world()
 
@@ -52,101 +110,134 @@ def game_loop():
 
         bp = blueprint_library.filter('model3')[0]
 
-        spawn_point = world.get_map().get_spawn_points()[38]  # 38 najlepszy
+        spawn_point = world.get_map().get_spawn_points()[82]  # 82 najlepszy
         vehicle = world.spawn_actor(bp, spawn_point)
 
         actor_list.append(vehicle)
 
-        map = world.get_map()
-        odl = 1.8
-        thr_val = 0.7
-        kn = 1
-        kd = 0
-        wp = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=(carla.LaneType.Driving))
-        vehicle.apply_control(carla.VehicleControl(throttle=thr_val, steer=0.0))
+        cam = get_cam(world, vehicle, WINDOW_SIZE)
+        actor_list.append(cam)
 
-        # waypoint_previous(wp), waypoint_next(wn), vehicle_location(car), vehicle_velocity(cer_vel), throttle_value(thr_val)
-        # cross_track_error(e), cross_track_steering(es), heding_error(he)
+        map = world.get_map()
+
+        odl_tyl_osi = -1.35  # odleg³oœæ osi od œrodka samochodu
+        gaz_max = 0.5  # ograniczenie maksymalnej wartoœci zadawanego gazu
+        zas_widz_cel = 2  # maksymalny zasiêg widzenia, w którym wyszukuje docelowy punkt
+        zas_widz_pred = zas_widz_cel * 3  # zasiêg widzenia potrzebny do regulacji prêdkoœci
+        kat_glob_cel = 0  # k¹t miêdzy prost¹ ³¹cz¹ca punkt docelowy z pocz¹tkiem uk³adu wzglêdnego a globaln¹ osi¹ "y"
+        kat_glob_pred = 0  # k¹t miêdzy prost¹ ³¹cz¹ca punkt regulacji prêdkoœci z pocz¹tkiem uk³adu wzglêdnego a globaln¹ osi¹ "y"
+        gain_kat_skret = 5  # przemno¿enie k¹ta krzywizny w celu uzyskania lepszego sterowania
+        gain_zas_widz = 1  # dynamicznie regulowany gain zasiêgu widzenia
+
+        lok_wysz_cel = vehicle.get_location()  # inicjalizacja punktu wyszukuj¹cego cel
+        lok_wysz_pred = vehicle.get_location()  # inicjalizacja punktu reguluj¹cego prêdkoœæ
+        lok_wzgl_cel = vehicle.get_location()  # inicjalizacja punktu celu ktory jest przeniesieniem waypointa do uk³adu wspó³rzêdnych opartego o samochód
+        lok_wzgl_pred = vehicle.get_location()  # inicjalizacja punktu reguluj¹cego prêdkoœæ w lokalnym uk³adzie wspó³rzêdnych
+
+        vehicle.apply_control(carla.VehicleControl(throttle=0.0, steer=0.0))
+        cel = map.get_waypoint(lok_wysz_cel, project_to_road=True, lane_type=(carla.LaneType.Driving))
+        pred = map.get_waypoint(lok_wysz_pred, project_to_road=True, lane_type=(carla.LaneType.Driving))
 
         while True:
             world.wait_for_tick()
 
-            car_loc = vehicle.get_location()
-            car_yaw = vehicle.get_transform().rotation.yaw
+            sam_lok = vehicle.get_location()  # lokalizacja samochodu
 
-            car_loc.x = car_loc.x + (odl * math.cos(math.radians(car_yaw)))
-            car_loc.y = car_loc.y + (odl * math.sin(math.radians(car_yaw)))
+            sam_kat = vehicle.get_transform().rotation.yaw  # kat skierowania samochodu
+            sam_kat = math.radians(sam_kat)
 
-            car_vel = vehicle.get_velocity()
-            car_vel = math.sqrt((car_vel.x * car_vel.x) + (car_vel.y * car_vel.y) + (car_vel.z * car_vel.z))  # [m/s]
+            # przeniesienie lokalizacji samochodu na jego tyln¹ oœ
+            sam_lok.x = sam_lok.x + (odl_tyl_osi * math.cos(sam_kat))
+            sam_lok.y = sam_lok.y + (odl_tyl_osi * math.sin(sam_kat))
 
-            wn = map.get_waypoint(car_loc, project_to_road=True, lane_type=(carla.LaneType.Driving))
-
-            a = (wn.transform.location.y - wp.transform.location.y) / (
-                        wn.transform.location.x - wp.transform.location.x + 0.000000001)
-            b = wp.transform.location.y - (wp.transform.location.x * a)
-
-            e = ((a * car_loc.x) - car_loc.y + b) / math.sqrt((a * a) + 1)
-
-            waypoint_yaw_n = wn.transform.rotation.yaw
-            waypoint_yaw_p = wp.transform.rotation.yaw
-
-            # Normalizacja yaw na zakres 0-360
-            if car_yaw < 0:
-                car_yaw = 360 + car_yaw
-
-            if waypoint_yaw_n < 0:
-                waypoint_yaw_n = 360 + waypoint_yaw_n
-
-            if waypoint_yaw_p < 0:
-                waypoint_yaw_p = 360 + waypoint_yaw_p
-
-            # Normalizacja strony po ktorej sie znajdujemy wzgledem prostej
-            if car_yaw > 180 and car_yaw <= 360:
-                if a > 0:
-                    e = e * (-1)
-
-            if car_yaw > 0 and car_yaw <= 180:
-                if a < 0:
-                    e = e * (-1)
-
-            if car_vel == 0:
-                es = 0
+            # obliczenie lokalizacji wyszukuj¹cej punkt docelowy
+            if kat_glob_cel != 0:
+                lok_wysz_cel.x = sam_lok.x + (zas_widz_cel * gain_zas_widz * math.cos(kat_glob_cel))
+                lok_wysz_cel.y = sam_lok.y + (zas_widz_cel * gain_zas_widz * math.sin(kat_glob_cel))
             else:
-                es = math.atan((kn * e) / (car_vel + kd))
+                lok_wysz_cel.x = sam_lok.x + (zas_widz_cel * gain_zas_widz * math.cos(sam_kat))
+                lok_wysz_cel.y = sam_lok.y + (zas_widz_cel * gain_zas_widz * math.sin(sam_kat))
 
-            he = waypoint_yaw_n - car_yaw
-
-            if he < 0:
-                skret1 = he
-                skret2 = 360 + he
-
+            # obliczenie lokalizacji wyszukuj¹cej punkt reguluj¹cy prêdkoœæ
+            if kat_glob_pred != 0:
+                lok_wysz_pred.x = sam_lok.x + (zas_widz_pred * gain_zas_widz * math.cos(kat_glob_pred))
+                lok_wysz_pred.y = sam_lok.y + (zas_widz_pred * gain_zas_widz * math.sin(kat_glob_pred))
             else:
-                skret1 = he
-                skret2 = -(360 - he)
+                lok_wysz_pred.x = sam_lok.x + (zas_widz_pred * gain_zas_widz * math.cos(sam_kat))
+                lok_wysz_pred.y = sam_lok.y + (zas_widz_pred * gain_zas_widz * math.sin(sam_kat))
 
-            if (abs(skret1) < abs(skret2)):
-                he = skret1
+            # zdobycie lokalizacji punktu docelowego w okolicach rozgl¹dania siê przez samochód
+            cel = map.get_waypoint(lok_wysz_cel, project_to_road=True, lane_type=carla.LaneType.Driving)
+
+            # zdobycie lokalizacji punktu reguluj¹cego prêdkoœæ
+            pred = map.get_waypoint(lok_wysz_pred, project_to_road=True, lane_type=carla.LaneType.Driving)
+
+            # obliczenie kata miedzy prosta ³¹cz¹c¹ punkt docelowy z pocz¹tkiem lokalnego uk³adu wspó³rzêdnych a osi¹ globaln¹ y
+            kat_glob_cel = math.atan2(cel.transform.location.y - sam_lok.y, cel.transform.location.x - sam_lok.x)
+
+            # obliczenie k¹ta miêdzy prost¹ ³¹cz¹c¹ punkt reguluj¹cy prêdkoœæ z pocz¹tkiem lokalnego uk³adu wspó³rzêdnych a osi¹ globaln¹ y
+            kat_glob_pred = math.atan2(pred.transform.location.y - sam_lok.y, pred.transform.location.x - sam_lok.x)
+
+            # obliczenie rzeczywistej odleg³oœci miêdzy pocz¹tkiem lokalnego uk³adu wspó³rzêdnych a celem
+            odl_cel = jak_daleko(cel.transform.location, sam_lok)
+
+            # obliczenie rzeczywistej odleg³oœci miêdzy pocz¹tkiem lokalnego uk³adu wspó³rzêdnych a punktem reg prêdkoœæ
+            odl_pred = jak_daleko(pred.transform.location, sam_lok)
+
+            # obliczenie wartoœci x i y celu w odniesieniu do lokalnego uk³adu wspó³rzêdnych
+            lok_wzgl_cel.x = odl_cel * math.sin(kat_glob_cel - math.radians(sam_kat))  # odleg³oœæ x
+            lok_wzgl_cel.y = odl_cel * math.cos(kat_glob_cel - math.radians(sam_kat))  # odleg³oœæ y
+
+            # obliczenie wartoœci x i y punktu regulacji prêdkoœci w odniesieniu do lokalnego uk³adu wspó³rzêdnych
+            lok_wzgl_pred.x = odl_pred * math.sin(kat_glob_pred - math.radians(sam_kat))  # odleglosc x
+            lok_wzgl_pred.y = odl_pred * math.cos(kat_glob_pred - math.radians(sam_kat))  # odleglosc y
+
+            # kat krzywizny celu
+            kat_krzyw_cel = 2 * lok_wzgl_cel.x / math.pow(odl_cel, 2) * gain_kat_skret
+
+            # k¹t krzywizny punktu regulacji prêdkoœci
+            kat_krzyw_pred = 2 * lok_wzgl_pred.x / math.pow(odl_pred, 2) * gain_kat_skret
+
+            # sterowanie wraz konwersja kata obrotu kol na wartoœæ w zakresie -1 do 1
+            kat_krzyw_cel = max(kat_krzyw_cel, -math.pi / 4)
+            kat_krzyw_cel = min(kat_krzyw_cel, math.pi / 4)
+            kat_krzyw_cel = kat_krzyw_cel * (4 / math.pi)
+
+
+            # gazowanie(pradowanie?) i hamowanie wraz z konwersja na wartosci przyjmowane przez pojazd
+            gaz = gaz_max - abs(math.sin(kat_krzyw_pred))
+
+            if gaz < gaz_max * 0.8:
+                ham = abs(math.sin(kat_krzyw_cel) * math.pow(gaz_max, 2))
             else:
-                he = skret2
+                ham = 0
 
-            he = (he * 2 * math.pi) / 360
+            # wysterowanie samochodu
+            vehicle.apply_control(carla.VehicleControl(throttle=gaz, steer=kat_krzyw_cel, brake=ham))
 
-            steer_input = he + es
+            pred_war = vehicle.get_velocity()
+            pred_war = math.sqrt((pred_war.x * pred_war.x) + (pred_war.y * pred_war.y) + (pred_war.z * pred_war.z))
 
-            vehicle.apply_control(carla.VehicleControl(throttle=thr_val, steer=steer_input))
 
-            # print(e, '\n')
-            world.debug.draw_string(car_loc, 'O', draw_shadow=False, color=carla.Color(r=255, g=0, b=0), life_time=0.1,
-                                    persistent_lines=True)
-            world.debug.draw_string(wn.transform.location, 'O', draw_shadow=False, color=carla.Color(r=0, g=255, b=0),
+            # rysowanie punktow
+            world.debug.draw_string(sam_lok, 'O', draw_shadow=False, color=carla.Color(r=255, g=0, b=0),
                                     life_time=0.1, persistent_lines=True)
-            world.debug.draw_string(wp.transform.location, 'O', draw_shadow=False, color=carla.Color(r=0, g=0, b=255),
+            world.debug.draw_string(cel.transform.location, 'O', draw_shadow=False, color=carla.Color(r=0, g=255, b=0),
                                     life_time=0.1, persistent_lines=True)
+            world.debug.draw_string(lok_wysz_cel, 'O', draw_shadow=False, color=carla.Color(r=0, g=0, b=255),
+                                    life_time=0.1, persistent_lines=True)
+            world.debug.draw_string(pred.transform.location, 'O', draw_shadow=False, color=carla.Color(r=0, g=255, b=0),
+                                    life_time=0.1, persistent_lines=True)
+            world.debug.draw_string(lok_wysz_pred, 'O', draw_shadow=False, color=carla.Color(r=0, g=0, b=255),
+                                    life_time=0.1, persistent_lines=True)
+            # for j in gp:
+            #    world.debug.draw_string(j.transform.location, 'O', draw_shadow=False, color=carla.Color(r=255, g=255, b=0), life_time=0.1, persistent_lines=True)
 
-            wp = wn
 
-
+            gain_zas_widz = pow(max(pred_war / 10, 1), 2)
+            print(gain_zas_widz)
+            # gain_zas_widz = 1
+            pygame.display.flip()
 
     finally:
         print('destroying actors')
@@ -154,23 +245,6 @@ def game_loop():
             actor.destroy()
         print('done.\n\n')
 
-    # ==============================================================================
-
-
-# -- main() --------------------------------------------------------------------
-# ==============================================================================
-
-def main():
-    game_loop()
-
 
 if __name__ == '__main__':
-    main()
-
-# cd F:\WindowsNoEditor
-# .\CarlaUE4
-
-# cd F:\WindowsNoEditor\pythonapi\util
-# python config.py -m Town07
-# cd F:\WindowsNoEditor\PythonAPI\examples
-# python Stanley_czysty.py
+    game_loop()
