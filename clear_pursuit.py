@@ -110,7 +110,7 @@ def game_loop():
 
         bp = blueprint_library.filter('model3')[0]
 
-        spawn_point = world.get_map().get_spawn_points()[82]  # 82 najlepszy
+        spawn_point = world.get_map().get_spawn_points()[79]  # 82 najlepszy
         vehicle = world.spawn_actor(bp, spawn_point)
 
         actor_list.append(vehicle)
@@ -121,7 +121,7 @@ def game_loop():
         map = world.get_map()
 
         odl_tyl_osi = -1.35  # odleg³oœæ osi od œrodka samochodu
-        gaz_max = 0.5  # ograniczenie maksymalnej wartoœci zadawanego gazu
+        gaz_max = 0.7  # ograniczenie maksymalnej wartoœci zadawanego gazu
         zas_widz_cel = 2  # maksymalny zasiêg widzenia, w którym wyszukuje docelowy punkt
         zas_widz_pred = zas_widz_cel * 3  # zasiêg widzenia potrzebny do regulacji prêdkoœci
         kat_glob_cel = 0  # k¹t miêdzy prost¹ ³¹cz¹ca punkt docelowy z pocz¹tkiem uk³adu wzglêdnego a globaln¹ osi¹ "y"
@@ -152,9 +152,6 @@ def game_loop():
 
             # obliczenie lokalizacji wyszukuj¹cej punkt docelowy
             if kat_glob_cel != 0:
-                lok_wysz_cel.x = sam_lok.x + (zas_widz_cel * gain_zas_widz * math.cos(kat_glob_cel))
-                lok_wysz_cel.y = sam_lok.y + (zas_widz_cel * gain_zas_widz * math.sin(kat_glob_cel))
-            else:
                 lok_wysz_cel.x = sam_lok.x + (zas_widz_cel * gain_zas_widz * math.cos(sam_kat))
                 lok_wysz_cel.y = sam_lok.y + (zas_widz_cel * gain_zas_widz * math.sin(sam_kat))
 
@@ -167,10 +164,11 @@ def game_loop():
                 lok_wysz_pred.y = sam_lok.y + (zas_widz_pred * gain_zas_widz * math.sin(sam_kat))
 
             # zdobycie lokalizacji punktu docelowego w okolicach rozgl¹dania siê przez samochód
-            cel = map.get_waypoint(lok_wysz_cel, project_to_road=True, lane_type=carla.LaneType.Driving)
+            typ_linii = carla.LaneType.Driving
+            cel = map.get_waypoint(lok_wysz_cel, project_to_road=True, lane_type=typ_linii)
 
             # zdobycie lokalizacji punktu reguluj¹cego prêdkoœæ
-            pred = map.get_waypoint(lok_wysz_pred, project_to_road=True, lane_type=carla.LaneType.Driving)
+            pred = map.get_waypoint(lok_wysz_pred, project_to_road=True, lane_type=typ_linii)
 
             # obliczenie kata miedzy prosta ³¹cz¹c¹ punkt docelowy z pocz¹tkiem lokalnego uk³adu wspó³rzêdnych a osi¹ globaln¹ y
             kat_glob_cel = math.atan2(cel.transform.location.y - sam_lok.y, cel.transform.location.x - sam_lok.x)
@@ -185,12 +183,12 @@ def game_loop():
             odl_pred = jak_daleko(pred.transform.location, sam_lok)
 
             # obliczenie wartoœci x i y celu w odniesieniu do lokalnego uk³adu wspó³rzêdnych
-            lok_wzgl_cel.x = odl_cel * math.sin(kat_glob_cel - math.radians(sam_kat))  # odleg³oœæ x
-            lok_wzgl_cel.y = odl_cel * math.cos(kat_glob_cel - math.radians(sam_kat))  # odleg³oœæ y
+            lok_wzgl_cel.x = odl_cel * math.sin(kat_glob_cel - sam_kat)  # odleg³oœæ x
+            lok_wzgl_cel.y = odl_cel * math.cos(kat_glob_cel - sam_kat)  # odleg³oœæ y
 
             # obliczenie wartoœci x i y punktu regulacji prêdkoœci w odniesieniu do lokalnego uk³adu wspó³rzêdnych
-            lok_wzgl_pred.x = odl_pred * math.sin(kat_glob_pred - math.radians(sam_kat))  # odleglosc x
-            lok_wzgl_pred.y = odl_pred * math.cos(kat_glob_pred - math.radians(sam_kat))  # odleglosc y
+            lok_wzgl_pred.x = odl_pred * math.sin(kat_glob_pred - sam_kat)  # odleglosc x
+            lok_wzgl_pred.y = odl_pred * math.cos(kat_glob_pred - sam_kat)  # odleglosc y
 
             # kat krzywizny celu
             kat_krzyw_cel = 2 * lok_wzgl_cel.x / math.pow(odl_cel, 2) * gain_kat_skret
@@ -202,7 +200,6 @@ def game_loop():
             kat_krzyw_cel = max(kat_krzyw_cel, -math.pi / 4)
             kat_krzyw_cel = min(kat_krzyw_cel, math.pi / 4)
             kat_krzyw_cel = kat_krzyw_cel * (4 / math.pi)
-
 
             # gazowanie(pradowanie?) i hamowanie wraz z konwersja na wartosci przyjmowane przez pojazd
             gaz = gaz_max - abs(math.sin(kat_krzyw_pred))
@@ -217,7 +214,7 @@ def game_loop():
 
             pred_war = vehicle.get_velocity()
             pred_war = math.sqrt((pred_war.x * pred_war.x) + (pred_war.y * pred_war.y) + (pred_war.z * pred_war.z))
-
+            print(pred_war)
 
             # rysowanie punktow
             world.debug.draw_string(sam_lok, 'O', draw_shadow=False, color=carla.Color(r=255, g=0, b=0),
@@ -233,9 +230,8 @@ def game_loop():
             # for j in gp:
             #    world.debug.draw_string(j.transform.location, 'O', draw_shadow=False, color=carla.Color(r=255, g=255, b=0), life_time=0.1, persistent_lines=True)
 
-
             gain_zas_widz = pow(max(pred_war / 10, 1), 2)
-            print(gain_zas_widz)
+            # print(gain_zas_widz)
             # gain_zas_widz = 1
             pygame.display.flip()
 
